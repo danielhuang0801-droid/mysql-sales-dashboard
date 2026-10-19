@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>即時銷售分析</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f3f6fb;
+ color:#1e293b;font-family:Arial,"Microsoft JhengHei",sans-serif}
+header{padding:24px;background:#16324f;color:white}
+main{max-width:1200px;margin:auto;padding:20px}
+nav{display:flex;flex-wrap:wrap;gap:16px}nav a{color:white}
+.summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+ gap:16px;margin:20px 0}.stat,.card{background:white;
+ padding:18px;border-radius:12px;min-width:0}
+.stat strong{font-size:24px;display:block;overflow-wrap:anywhere}
+.charts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+ gap:20px}.wide{grid-column:1/-1}.chart{width:100%;height:380px}
+button{background:#2563eb;color:white;border:0;padding:12px;
+ border-radius:8px;cursor:pointer}button:disabled{opacity:.6}
+.error{color:#b91c1c}[hidden]{display:none!important}
+@media(max-width:900px){.summary{grid-template-columns:
+ repeat(2,minmax(0,1fr))}.charts{grid-template-columns:1fr}}
+@media(max-width:480px){.summary{grid-template-columns:1fr}
+ main{padding:10px}.card{padding:10px}}
+</style>
+</head>
+<body>
+<header><h1>即時銷售分析儀表板</h1>
+<p>教學用模擬資料，每次重新整理讀取最新結果</p>
+<nav><a href="#daily">每日趨勢</a><a href="#products">商品比較</a>
+<a href="#categories">分類占比</a></nav></header>
+<main>
+<button id="refresh">重新讀取資料</button>
+<p id="status" role="status" aria-live="polite"></p>
+<div id="dashboard" hidden>
+<section class="summary">
+<div class="stat">資料筆數<strong id="count"></strong></div>
+<div class="stat">售出數量含退貨<strong id="quantity"></strong></div>
+<div class="stat">退貨數量<strong id="returns"></strong></div>
+<div class="stat">淨銷售額<strong id="revenue"></strong></div>
+</section>
+<div class="charts">
+<section id="daily" class="card wide"><h2>每日淨銷售額</h2>
+<div id="daily-chart" class="chart"></div><p id="daily-note"></p></section>
+<section id="products" class="card"><h2>各商品淨銷售額</h2>
+<div id="products-chart" class="chart"></div>
+<p id="products-note"></p></section>
+<section id="categories" class="card"><h2>各分類占比</h2>
+<div id="categories-chart" class="chart"></div>
+<p id="categories-note"></p></section></div>
+</div>
+<p>淨銷售額＝單價 ×（售出數量－退貨數量）</p>
+</main>
+<script>
+// 填入你專屬的 Render API 網址
+const API_URL='https://mysql-sales-dashboard-8i4e.onrender.com/api/dashboard';
+const el=id=>document.getElementById(id);
+const text=(id,value)=>el(id).textContent=value;
+const number=v=>Number(v).toLocaleString('zh-TW');
+const money=v=>'NT$'+number(v);
+const highest=rows=>rows.reduce((a,b)=>
+ !a||b.net_revenue>a.net_revenue?b:a,null);
+const config={responsive:true,displayModeBar:false,displaylogo:false};
+const layout=extra=>({autosize:true,height:380,
+ margin:{l:70,r:20,t:20,b:60},font:{family:'Arial,Microsoft JhengHei'},
+ ...extra});
+async function load(){
+ el('refresh').disabled=true;el('dashboard').hidden=true;
+ el('status').className='';
+ text('status','正在讀取；免費主機休眠時可能需等待一分鐘以上。');
+ const controller=new AbortController();
+ const timer=setTimeout(()=>controller.abort(),120000);
+ try{
+  if(!window.Plotly)throw Error('圖表套件未載入');
+  const response=await fetch(API_URL,{cache:'no-store',
+   signal:controller.signal});
+  if(!response.ok)throw Error('API 回應 '+response.status);
+  const d=await response.json();
+  if(!d.summary||!Array.isArray(d.daily)||!Array.isArray(d.products)
+   ||!Array.isArray(d.categories))throw Error('API 格式不符');
+  const s=d.summary;
+  text('count',number(s.record_count));
+  text('quantity',number(s.total_quantity)+' 件');
+  text('returns',number(s.total_returns)+' 件');
+  text('revenue',money(s.net_revenue));
+  el('dashboard').hidden=false;
+  const products=[...d.products].sort((a,b)=>a.net_revenue-b.net_revenue);
+  await Promise.all([
+   Plotly.react('daily-chart',[{x:d.daily.map(r=>r.date),
+    y:d.daily.map(r=>r.net_revenue),type:'scatter',mode:'lines+markers'}],
+    layout({xaxis:{title:'日期'},yaxis:{title:'淨銷售額（元）'}}),config),
+   Plotly.react('products-chart',[{x:products.map(r=>r.net_revenue),
+    y:products.map(r=>r.name),type:'bar',orientation:'h'}],
+    layout({margin:{l:100,r:20,t:20,b:60},
+     xaxis:{title:'淨銷售額（元）'},yaxis:{automargin:true,
+      categoryorder:'array',categoryarray:products.map(r=>r.name)}}),config),
+   Plotly.react('categories-chart',[{labels:d.categories.map(r=>r.name),
+    values:d.categories.map(r=>r.net_revenue),type:'pie',
+    textinfo:'label+percent',textposition:'inside'}],
+    layout({showlegend:false,margin:{l:10,r:10,t:20,b:20}}),config)
+  ]);
+  const day=highest(d.daily),product=highest(d.products);
+  const category=highest(d.categories);
+  text('daily-note',day?`最高日期：${day.date}，${money(day.net_revenue)}`:
+   '目前沒有資料');
+  text('products-note',product?`最高商品：${product.name}，`+
+   money(product.net_revenue):'目前沒有資料');
+  text('categories-note',category&&s.net_revenue>0?
+   `最高分類：${category.name}，占比 `+
+   (category.net_revenue/s.net_revenue*100).toFixed(1)+'%':'無可計算占比');
+  text('status','讀取成功｜臺灣查詢時間：'+
+   new Date(d.generated_at).toLocaleString('zh-TW',
+    {timeZone:'Asia/Taipei',hour12:false}));
+ }catch(error){
+  el('dashboard').hidden=true;el('status').className='error';
+  text('status',error.name==='AbortError'?'讀取逾時，請重試':
+   '讀取失敗：'+error.message+'；請檢查 API、Logs 與前端來源設定。');
+ }finally{clearTimeout(timer);el('refresh').disabled=false;}
+}
+el('refresh').addEventListener('click',load);load();
+</script>
+</body>
+</html>
